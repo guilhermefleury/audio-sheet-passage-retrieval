@@ -1,0 +1,64 @@
+# Ensure this file is tracked
+!.gitignore
+
+# Ignore the files and folders currently in this workspace
+/data/
+/piece_retrieval.pdf
+/piece_retrieval.txt
+
+# OS-specific junk
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Editor/IDE settings
+.vscode/
+.idea/
+
+# Python caches and virtual environments (in case added later)
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Logs
+*.log
+
+# Large/binary data artifacts (present and future)
+*.h5
+*.hdf5
+*.npy
+*.npz
+*.pkl
+*.pickle
+*.pt
+*.pth
+*.onnx
+*.ckpt
+*.pb
+*.tfrecord
+
+# Audio/media commonly found in datasets
+*.wav
+*.flac
+*.mp3
+*.m4a
+*.aac
+*.ogg
+*.mid
+*.midi
+
+# Archives
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.rar
+*.7z
