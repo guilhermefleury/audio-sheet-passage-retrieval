@@ -29,26 +29,26 @@ def img_crop(img,system_coords):
        
     return img[h_min:h_max, w_min:w_max]
 
-def system_sheet_slicer(system, step=90):    
+def system_sheet_slicer(system, stride=90):    
     system_sequence = []
     w_iterator = 0
     while w_iterator + 180 <= system.shape[1]:
         snippet = system[:, w_iterator:w_iterator + 180]
         system_sequence.append(snippet)
-        w_iterator += step
+        w_iterator += stride
     if w_iterator < system.shape[1]:
         snippet = system[:, system.shape[1]-180:system.shape[1]]
         system_sequence.append(snippet)
     return system_sequence
 
-def get_sheet_systems(file_path, page=1):
+def get_sheet_systems(file_path, page=1,stride=90):
     img = load_img_sheet(file_path, page)
     system_coordinates = load_npy_sheet(file_path, page)
     n_systems = system_coordinates.shape[0]
     systems = []
     for system in range(n_systems):
         crop = img_crop(img, system_coordinates[system])
-        slices = system_sheet_slicer(crop)
+        slices = system_sheet_slicer(crop,stride)
         systems.append(slices)
     
     
