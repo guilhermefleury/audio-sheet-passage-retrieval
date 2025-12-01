@@ -70,9 +70,28 @@ def get_vertical_lines(img):
     
     return vertical_lines
 
-def count_bars_in_system(img):
+def count_bars_in_system(img, debug=False):
+    """
+    Counts the number of bar lines in a system by detecting tall vertical structures.
+    """
     vertical_lines = get_vertical_lines(img)
-    return len(vertical_lines)-1
+    
+    # Find contours in the filtered image
+    contours, _ = cv2.findContours(vertical_lines, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    if debug:
+        print(f"    Total contours found: {len(contours)}")
+    
+    # Count only tall vertical lines (bar lines)
+    bar_count = 0
+    for cnt in contours:
+        x, y, w, h = cv2.boundingRect(cnt)
+        if debug:
+            print(f"    Contour: x={x}, y={y}, w={w}, h={h}")
+        if h > 80:  # Bar lines are taller than 80 pixels (adjusted for different system heights)
+            bar_count += 1
+    
+    return bar_count - 1  # Return number of spaces between bars, not bar count
 
 #-----------------------------------------------------------------------------
 
