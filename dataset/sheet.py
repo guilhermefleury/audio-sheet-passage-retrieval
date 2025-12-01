@@ -46,39 +46,38 @@ def get_sheet_systems(file_path, page=1,stride=90):
     system_coordinates = load_npy_sheet(file_path, page)
     n_systems = system_coordinates.shape[0]
     systems = []
+    systems_sliced = []
     for system in range(n_systems):
         crop = img_crop(img, system_coordinates[system])
+        systems.append(crop)
         slices = system_sheet_slicer(crop,stride)
-        systems.append(slices)
+        systems_sliced.append(slices)
     
     
-    return systems
+    return systems, systems_sliced
 
+def get_vertical_lines(img):
+    """
+    Extracts vertical lines from sheet music image using morphological filtering.
+    Returns the filtered image showing only vertical structures.
+    """
+    # Threshold to binary (inverted: notes/lines become white)
+    _, binary = cv2.threshold(img, 127, 255, cv2.THRESH_BINARY_INV)
+    
+    # Create vertical kernel and apply morphological opening
+    vertical_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 80))
+    vertical_lines = cv2.morphologyEx(binary, cv2.MORPH_OPEN, vertical_kernel)
+    
+    return vertical_lines
 
+def count_bars_in_system(img):
+    vertical_lines = get_vertical_lines(img)
+    return len(vertical_lines)-1
 
 #-----------------------------------------------------------------------------
 
 numpy = load_npy_sheet("../data/msmd/BachJS__BWV779__bach-invention-08", 1)
 img = load_img_sheet("../data/msmd/BachJS__BWV779__bach-invention-08", 1)
-crop = img_crop(img, numpy[0])
-system =system_sheet_slicer(crop)
-systems = get_sheet_systems("../data/msmd/BachJS__BWV779__bach-invention-08")
-print(f"Number of systems in the page: {len(systems)}")
-print(f"Number of slices in the first system: {len(systems[0])}")
-print(f"Shape of each slice: {systems[0][0].shape}")
-print(f"Shape of the original image: {img.shape}")
-print(f"Shape of the first system crop: {crop.shape}")
-print(f"Shape of the first slice of the first system: {system[0].shape}")
-print(f"First slice array data:\n {system[0]}")
-print(f"Systems variable dimension: {len(systems)} systems, each with {len(systems[0])} slices.")
-
-
-cols = 6
-pad_img = np.full_like(system[0], 255)  # white pad
-chunks = [system[i:i+cols] for i in range(0, len(system), cols)]
-if len(chunks[-1]) < cols:
-    chunks[-1] += [pad_img] * (cols - len(chunks[-1]))
-rows = [cv2.hconcat(ch) for ch in chunks]
-montage = cv2.vconcat(rows)
-cv2.imshow("All slices (grid)", montage)
-cv2.waitKey(0); cv2.destroyAllWindows()
+systems = get_sheet_systems("../data/msmd/BachJS__BWV779__bach-invention-08", 1, stride=90)
+count=count_bars_in_system(img)
+print(f"Number of bar lines: {count}")
