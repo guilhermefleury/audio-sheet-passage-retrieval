@@ -70,9 +70,15 @@ def get_vertical_lines(img):
     
     return vertical_lines
 
-def count_bars_in_system(img, debug=False):
+def count_bars_in_system(img, debug=False, min_distance=10):
     """
     Counts the number of bar lines in a system by detecting tall vertical structures.
+    Merges nearby vertical lines (e.g., double bar lines) into single bars.
+    
+    Args:
+        img: Grayscale image of a music system
+        debug: If True, prints detailed contour information
+        min_distance: Minimum horizontal distance (pixels) between separate bars (default: 10)
     """
     vertical_lines = get_vertical_lines(img)
     
@@ -82,17 +88,65 @@ def count_bars_in_system(img, debug=False):
     if debug:
         print(f"    Total contours found: {len(contours)}")
     
-    # Count only tall vertical lines (bar lines)
-    bar_count = 0
+    # Extract x-positions of tall vertical lines (bar lines)
+    bar_positions = []
     for cnt in contours:
         x, y, w, h = cv2.boundingRect(cnt)
         if debug:
             print(f"    Contour: x={x}, y={y}, w={w}, h={h}")
-        if h > 80:  # Bar lines are taller than 80 pixels (adjusted for different system heights)
-            bar_count += 1
+        if h > 80:  # Bar lines are taller than 80 pixels
+            bar_positions.append(x)
     
-    return bar_count - 1  # Return number of spaces between bars, not bar count
+    # Sort positions left to right
+    bar_positions.sort()
+    
+    # Merge nearby bars (e.g., double bar lines)
+    merged_bars = []
+    for x in bar_positions:
+        if not merged_bars or (x - merged_bars[-1]) > min_distance:
+            merged_bars.append(x)
+        elif debug:
+            print(f"    Merged bar at x={x} with previous bar at x={merged_bars[-1]}")
+    
+    if debug:
+        print(f"    After merging: {len(merged_bars)} distinct bars")
+    
+    return len(merged_bars) - 1  # Return number of spaces between bars, not bar count
 
+def get_bars_in_song(file_path):
+    """
+    Returns a list of bar counts for each system across all pages of a song.
+    
+    Args:
+        file_path: Path to the MSMD piece directory (e.g., "../data/msmd/BachJS__BWV779__bach-invention-08")
+    
+    Returns:
+        List of integers, where each element is the number of bars in that system (in order across all pages)
+    """
+    score_name = file_path.split("/")[-1]
+    coords_dir = Path(file_path) / "scores" / f"{score_name}_ly" / "coords"
+    
+    # Find all systems_*.npy files to determine number of pages
+    systems_files = sorted(coords_dir.glob("systems_*.npy"))
+    
+    if not systems_files:
+        raise FileNotFoundError(f"No systems files found in {coords_dir}")
+    
+    bars_per_system = []
+    
+    # Iterate through each page
+    for page_num in range(1, len(systems_files) + 1):
+        # Get systems for this page
+        systems, _ = get_sheet_systems(file_path, page_num)
+        
+        # Count bars in each system on this page
+        for system_img in systems:
+            bar_count = count_bars_in_system(system_img)
+            bars_per_system.append(bar_count)
+    
+    return bars_per_system
+    
+    
 #-----------------------------------------------------------------------------
 
 numpy = load_npy_sheet("../data/msmd/BachJS__BWV779__bach-invention-08", 1)
