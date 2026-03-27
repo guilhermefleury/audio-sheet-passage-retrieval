@@ -3,12 +3,12 @@ from pathlib import Path
 import cv2
 
 def load_npy_sheet(file_path, page=1):
-    score_name = file_path.split("/")[-1]
+    score_name = Path(file_path).name
     npy_path = Path(file_path) / "scores" / f"{score_name}_ly" / "coords" / f"systems_0{page}.npy"
     return np.load(npy_path)
 
 def load_img_sheet(file_path, page=1):
-    score_name = file_path.split("/")[-1]
+    score_name = Path(file_path).name
     img_path = Path(file_path) / "scores" / f"{score_name}_ly" / "img" / f"0{page}.png"
     return cv2.imread(str(img_path), cv2.IMREAD_GRAYSCALE)
 
@@ -123,7 +123,7 @@ def get_bars_in_song(file_path):
     Returns:
         List of integers, where each element is the number of bars in that system (in order across all pages)
     """
-    score_name = file_path.split("/")[-1]
+    score_name = Path(file_path).name
     coords_dir = Path(file_path) / "scores" / f"{score_name}_ly" / "coords"
     
     # Find all systems_*.npy files to determine number of pages
@@ -147,10 +147,9 @@ def get_bars_in_song(file_path):
     return bars_per_system
     
     
-#-----------------------------------------------------------------------------
-
-numpy = load_npy_sheet("../data/msmd/BachJS__BWV779__bach-invention-08", 1)
-img = load_img_sheet("../data/msmd/BachJS__BWV779__bach-invention-08", 1)
-systems = get_sheet_systems("../data/msmd/BachJS__BWV779__bach-invention-08", 1, stride=90)
-count=count_bars_in_system(img)
-print(f"Number of bar lines: {count}")
+if __name__ == "__main__":
+    numpy = load_npy_sheet("../data/msmd/BachJS__BWV779__bach-invention-08", 1)
+    img = load_img_sheet("../data/msmd/BachJS__BWV779__bach-invention-08", 1)
+    systems = get_sheet_systems("../data/msmd/BachJS__BWV779__bach-invention-08", 1, stride=90)
+    count = count_bars_in_system(img)
+    print(f"Number of bar lines: {count}")
