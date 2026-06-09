@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from torch.utils.data import DataLoader
 
 from .all_passages_dataset import AllPassagesDataset, passage_sequence_collate_fn
+from .passage_group_dataset import PassageGroupDataset, filter_jobs_by_variant
 from .passage_sequence_dataset import PassageSequenceDataset
 from .performance_pair_dataset import PerformancePairDataset
 from .splits import build_piece_split_manifest, load_split_manifest, save_split_manifest
@@ -213,5 +214,117 @@ def create_passage_sequence_split_dataloaders(
         datasets[split] = ds
         loaders[split] = dl
         skipped_summary[split] = skipped
+
+    return datasets, loaders, skipped_summary
+
+
+def create_passage_group_split_dataloaders(
+    processed_root: str,
+    split_manifest_path: str,
+    batch_size: int = 64,
+    num_workers: int = 0,
+    pin_memory: bool = False,
+    drop_last_train: bool = True,
+    train_synths: Optional[List[str]] = None,
+    train_tempo_range: Optional[Tuple[int, int]] = None,
+    eval_synths: Optional[List[str]] = None,
+    eval_tempo_range: Optional[Tuple[int, int]] = None,
+    train_sheet_transform: Optional[Any] = None,
+    train_spec_transform: Optional[Any] = None,
+    eval_sheet_transform: Optional[Any] = None,
+    eval_spec_transform: Optional[Any] = None,
+    return_meta: bool = True,
+    skip_missing: bool = True,
+) -> Tuple[Dict[str, PassageGroupDataset], Dict[str, DataLoader], Dict[str, List[Dict[str, str]]]]:
+    """
+    Build train/val/test DataLoaders using PassageGroupDataset.
+
+    Each item is one unique (piece, system_id); the audio variant is sampled
+    per __getitem__ call ("random" for train, "fixed" for val/test). The
+    train split is also filtered to the paper's training synths/tempo range;
+    val and test are filtered to the held-out evaluation synth/tempo.
+
+    Argument conventions:
+      *_synths        : list of allowed synth names; None means no filtering
+      *_tempo_range   : (lo, hi) inclusive bounds in 1000ths (1000 = 100%);
+                        None means no filtering
+    """
+    manifest = load_split_manifest(split_manifest_path)
+    jobs_by_split = manifest.get("jobs")
+    if not isinstance(jobs_by_split, dict):
+        raise ValueError("Invalid split manifest: missing jobs map.")
+
+    split_configs = {
+        "train": {
+            "synths": train_synths,
+            "tempo_range": train_tempo_range,
+            "mode": "random",
+            "sheet_transform": train_sheet_transform,
+            "spec_transform": train_spec_transform,
+        },
+        "val": {
+            "synths": eval_synths,
+            "tempo_range": eval_tempo_range,
+            "mode": "fixed",
+            "sheet_transform": eval_sheet_transform,
+            "spec_transform": eval_spec_transform,
+        },
+        "test": {
+            "synths": eval_synths,
+            "tempo_range": eval_tempo_range,
+            "mode": "fixed",
+            "sheet_transform": eval_sheet_transform,
+            "spec_transform": eval_spec_transform,
+        },
+    }
+
+    datasets: Dict[str, PassageGroupDataset] = {}
+    loaders: Dict[str, DataLoader] = {}
+    skipped_summary: Dict[str, List[Dict[str, str]]] = {"train": [], "val": [], "test": []}
+
+    for split, cfg in split_configs.items():
+        split_jobs = jobs_by_split.get(split, [])
+        if not isinstance(split_jobs, list):
+            raise ValueError(f"Invalid split manifest: jobs[{split}] must be a list.")
+
+        filtered = filter_jobs_by_variant(
+            split_jobs,
+            synths=cfg["synths"],
+            tempo_range=cfg["tempo_range"],
+        )
+        if not filtered:
+            raise ValueError(
+                f"No jobs left in '{split}' after variant filtering. "
+                f"Check synth allowlist and tempo range."
+            )
+
+        ds = PassageGroupDataset(
+            processed_root=processed_root,
+            jobs=filtered,
+            sample_variant=cfg["mode"],
+            sheet_transform=cfg["sheet_transform"],
+            spec_transform=cfg["spec_transform"],
+            return_meta=return_meta,
+            skip_missing=skip_missing,
+        )
+        if len(ds) == 0:
+            raise ValueError(
+                f"No valid (piece, system) groups found for '{split}' split."
+            )
+
+        shuffle = split == "train"
+        drop_last = drop_last_train if split == "train" else False
+
+        loaders[split] = DataLoader(
+            ds,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            num_workers=num_workers,
+            pin_memory=pin_memory,
+            drop_last=drop_last,
+            collate_fn=passage_sequence_collate_fn,
+        )
+        datasets[split] = ds
+        skipped_summary[split] = ds.skipped
 
     return datasets, loaders, skipped_summary

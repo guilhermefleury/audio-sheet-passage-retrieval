@@ -31,7 +31,28 @@ from tqdm import tqdm
 sys.path.insert(0, str(Path(__file__).parent))
 
 from model import CrossModalEncoder
-from dataset.dataloaders import create_passage_sequence_split_dataloaders
+from dataset.dataloaders import (
+    create_passage_group_split_dataloaders,
+    create_passage_sequence_split_dataloaders,
+)
+
+
+_PAPER_EVAL_SYNTHS = ("grand-piano-YDP-20160804",)
+
+
+def _parse_csv_str(s):
+    if s is None or s == "":
+        return None
+    return [item.strip() for item in s.split(",") if item.strip()]
+
+
+def _parse_csv_int_pair(s):
+    if s is None or s == "":
+        return None
+    parts = [int(x.strip()) for x in s.split(",") if x.strip()]
+    if len(parts) != 2:
+        raise ValueError(f"Expected 'lo,hi' for tempo range, got {s!r}")
+    return (parts[0], parts[1])
 
 
 # ---------------------------------------------------------------------------
@@ -157,13 +178,25 @@ def main(args):
         sys.exit(1)
 
     print(f"\nBuilding '{args.split}' loader from: {manifest.name}")
-    _, loaders, skipped = create_passage_sequence_split_dataloaders(
-        processed_root=args.processed_root,
-        split_manifest_path=str(manifest),
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        pin_memory=(device.type == "cuda"),
-    )
+    if args.use_group_dataset:
+        _, loaders, skipped = create_passage_group_split_dataloaders(
+            processed_root=args.processed_root,
+            split_manifest_path=str(manifest),
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            pin_memory=(device.type == "cuda"),
+            drop_last_train=False,
+            eval_synths=_parse_csv_str(args.eval_synths),
+            eval_tempo_range=_parse_csv_int_pair(args.eval_tempo_range),
+        )
+    else:
+        _, loaders, skipped = create_passage_sequence_split_dataloaders(
+            processed_root=args.processed_root,
+            split_manifest_path=str(manifest),
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            pin_memory=(device.type == "cuda"),
+        )
     if skipped.get(args.split):
         print(f"  [warn] {len(skipped[args.split])} jobs skipped in '{args.split}'")
 
@@ -230,6 +263,19 @@ if __name__ == "__main__":
                         help="Batch size for embedding (no memory constraint from gradients)")
     parser.add_argument("--num_workers", type=int, default=4,
                         help="DataLoader workers. Use 0 on Windows; 4-8 on Linux.")
+
+    # Dataset selection (must match the train-time choice to interpret metrics correctly)
+    parser.add_argument("--use_group_dataset", action="store_true", default=True,
+                        help="Use PassageGroupDataset (atomic (piece, system)). "
+                             "Match the choice used at training time.")
+    parser.add_argument("--no_group_dataset", dest="use_group_dataset", action="store_false")
+    parser.add_argument("--eval_synths", type=str,
+                        default=",".join(_PAPER_EVAL_SYNTHS),
+                        help="Comma-separated synth allowlist for eval "
+                             "(paper test_aug: grand-piano-YDP-20160804). Empty disables.")
+    parser.add_argument("--eval_tempo_range", type=str, default="1000,1000",
+                        help="Comma-separated 'lo,hi' tempo bounds for eval "
+                             "(paper test_aug: 1000,1000).")
 
     # Model overrides (only needed if checkpoint has no stored args)
     parser.add_argument("--snippet_emb_dim", type=int, default=32)

@@ -22,6 +22,7 @@ import sys
 import time
 from functools import partial
 from pathlib import Path
+from typing import Optional, Tuple
 
 import numpy as np
 import torch
@@ -34,7 +35,38 @@ from tqdm import tqdm
 sys.path.insert(0, str(Path(__file__).parent))
 
 from model import CrossModalEncoder, triplet_loss
-from dataset.dataloaders import create_passage_sequence_split_dataloaders
+from dataset.dataloaders import (
+    build_sheet_train_transform,
+    create_passage_group_split_dataloaders,
+    create_passage_sequence_split_dataloaders,
+)
+
+
+# Paper full_aug training synths (msmd_config.yaml `full_aug.synths`).
+_PAPER_TRAIN_SYNTHS = (
+    "acoustic_piano_imis_1",
+    "ElectricPiano",
+    "YamahaGrandPiano",
+)
+# Paper held-out test synth (msmd_config.yaml `test_aug.synths`).
+_PAPER_EVAL_SYNTHS = (
+    "grand-piano-YDP-20160804",
+)
+
+
+def _parse_csv_str(s: Optional[str]) -> Optional[list]:
+    if s is None or s == "":
+        return None
+    return [item.strip() for item in s.split(",") if item.strip()]
+
+
+def _parse_csv_int_pair(s: Optional[str]) -> Optional[Tuple[int, int]]:
+    if s is None or s == "":
+        return None
+    parts = [int(x.strip()) for x in s.split(",") if x.strip()]
+    if len(parts) != 2:
+        raise ValueError(f"Expected 'lo,hi' for tempo range, got {s!r}")
+    return (parts[0], parts[1])
 
 
 # ---------------------------------------------------------------------------
@@ -196,30 +228,56 @@ def main(args):
         sys.exit(1)
 
     print("Building dataloaders...")
-    datasets, loaders, skipped = create_passage_sequence_split_dataloaders(
-        processed_root=args.processed_root,
-        split_manifest_path=str(manifest),
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        pin_memory=(device.type == "cuda"),
-        drop_last_train=True,    # keeps batch size stable for in-batch negatives
-    )
-    print(f"  train : {len(datasets['train']):>6} passages")
-    print(f"  val   : {len(datasets['val']):>6} passages")
-    print(f"  test  : {len(datasets['test']):>6} passages")
+    if args.use_group_dataset:
+        train_sheet_tf = build_sheet_train_transform(
+            translation=args.sheet_translation,
+            scale_range=(args.sheet_scale_low, args.sheet_scale_high),
+        )
+        datasets, loaders, skipped = create_passage_group_split_dataloaders(
+            processed_root=args.processed_root,
+            split_manifest_path=str(manifest),
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            pin_memory=(device.type == "cuda"),
+            drop_last_train=True,
+            train_synths=_parse_csv_str(args.train_synths),
+            train_tempo_range=_parse_csv_int_pair(args.train_tempo_range),
+            eval_synths=_parse_csv_str(args.eval_synths),
+            eval_tempo_range=_parse_csv_int_pair(args.eval_tempo_range),
+            train_sheet_transform=train_sheet_tf,
+        )
+        print(f"  using PassageGroupDataset (atomic (piece, system); variant sampled per epoch)")
+        for split, ds in datasets.items():
+            print(f"    {split:<5}: {len(ds):>6} groups, {ds.num_variants_total:>7} total variants")
+    else:
+        datasets, loaders, skipped = create_passage_sequence_split_dataloaders(
+            processed_root=args.processed_root,
+            split_manifest_path=str(manifest),
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            pin_memory=(device.type == "cuda"),
+            drop_last_train=True,
+        )
+    unit = "groups" if args.use_group_dataset else "passages"
+    print(f"  train : {len(datasets['train']):>6} {unit}")
+    print(f"  val   : {len(datasets['val']):>6} {unit}")
+    print(f"  test  : {len(datasets['test']):>6} {unit}")
     for split, skip_list in skipped.items():
         if skip_list:
             print(f"  [warn] skipped {len(skip_list)} jobs in {split}")
 
-    # Replace default train/val samplers with fixed-size random samplers when
-    # n_train / n_val are smaller than the full dataset (mirrors the original
-    # repo's subsampling, which prevents multi-hour epochs).
+    # Replace default train/val samplers with fixed-size random samplers (mirrors
+    # the original repo's subsampling, which prevents multi-hour epochs).
+    # When n_train > dataset size, sample with replacement so the per-epoch
+    # iteration count stays constant; each group is then seen multiple times
+    # per epoch with different audio variants — the desired augmentation effect.
     from torch.utils.data import DataLoader as _DL
     from dataset.dataloaders import passage_sequence_collate_fn
 
     n_train_total = len(datasets["train"])
-    if args.n_train is not None and args.n_train < n_train_total:
-        sampler = RandomSampler(datasets["train"], replacement=False,
+    if args.n_train is not None:
+        use_replacement = args.n_train > n_train_total
+        sampler = RandomSampler(datasets["train"], replacement=use_replacement,
                                 num_samples=args.n_train)
         loaders["train"] = _DL(
             datasets["train"],
@@ -230,8 +288,12 @@ def main(args):
             drop_last=True,
             collate_fn=passage_sequence_collate_fn,
         )
-        print(f"  Subsampling train to {args.n_train} passages/epoch "
-              f"({args.n_train / n_train_total * 100:.1f}% of total)")
+        ratio_str = (
+            f"{args.n_train / n_train_total * 100:.1f}% of total"
+            if not use_replacement
+            else f"~{args.n_train / n_train_total:.1f}x oversample"
+        )
+        print(f"  Sampling train: {args.n_train} {unit}/epoch ({ratio_str})")
 
     n_val_total = len(datasets["val"])
     if args.n_val is not None and args.n_val < n_val_total:
@@ -394,5 +456,34 @@ if __name__ == "__main__":
     parser.add_argument("--grad_accum", type=int, default=1,
                         help="Gradient accumulation steps (effective_batch = batch_size * grad_accum). "
                              "Use >1 only when the GPU forces you below batch_size=64.")
+
+    # Dataset / augmentation
+    parser.add_argument("--use_group_dataset", action="store_true", default=True,
+                        help="Use PassageGroupDataset (atomic (piece, system); audio variant "
+                             "sampled per epoch). Recommended; matches paper semantics.")
+    parser.add_argument("--no_group_dataset", dest="use_group_dataset", action="store_false",
+                        help="Fall back to AllPassagesDataset (old behaviour; one item "
+                             "per (piece, performance, system) triple).")
+    parser.add_argument("--train_synths", type=str,
+                        default=",".join(_PAPER_TRAIN_SYNTHS),
+                        help="Comma-separated synth allowlist for the train split "
+                             "(paper full_aug: acoustic_piano_imis_1,ElectricPiano,YamahaGrandPiano). "
+                             "Empty string disables filtering.")
+    parser.add_argument("--train_tempo_range", type=str, default="900,1100",
+                        help="Comma-separated 'lo,hi' tempo bounds in 1000ths for train "
+                             "(paper full_aug: 900,1100 = 0.9x..1.1x). Empty disables.")
+    parser.add_argument("--eval_synths", type=str,
+                        default=",".join(_PAPER_EVAL_SYNTHS),
+                        help="Comma-separated synth allowlist for val/test "
+                             "(paper test_aug: grand-piano-YDP-20160804). Empty disables.")
+    parser.add_argument("--eval_tempo_range", type=str, default="1000,1000",
+                        help="Comma-separated 'lo,hi' tempo bounds for val/test "
+                             "(paper test_aug: 1000,1000 = original tempo only).")
+    parser.add_argument("--sheet_translation", type=int, default=5,
+                        help="Random vertical shift of sheet snippets in pixels (paper: 5).")
+    parser.add_argument("--sheet_scale_low", type=float, default=0.95,
+                        help="Random sheet scaling lower bound (paper: 0.95).")
+    parser.add_argument("--sheet_scale_high", type=float, default=1.05,
+                        help="Random sheet scaling upper bound (paper: 1.05).")
 
     main(parser.parse_args())
