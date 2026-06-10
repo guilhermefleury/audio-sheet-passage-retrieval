@@ -115,3 +115,47 @@ def build_sheet_train_transform(
     if scale_range[0] != 1.0 or scale_range[1] != 1.0:
         ops.append(RandomScale(scale_range=scale_range))
     return Compose(ops) if ops else None
+
+
+# ---------------------------------------------------------------------------
+# Spectrogram-side transforms
+# ---------------------------------------------------------------------------
+
+class RandomSpecShift:
+    """
+    Random ±max_shift frame shift of an audio spectrogram sequence in time.
+
+    Implements the paper's `onset_translation` augmentation (msmd_config.yaml
+    full_aug.onset_translation = 1). Applied per-passage (same shift for all
+    snippets in the sequence), with zero-padding on the wrap-around region
+    so the model sees silence at the edges instead of cyclic noise.
+
+    Input/output shape: [Na, 1, F, T] with F=92, T=20 in the paper setting.
+    """
+
+    def __init__(self, max_shift: int = 1, pad_value: float = 0.0) -> None:
+        self.max_shift = int(max_shift)
+        self.pad_value = float(pad_value)
+
+    def __call__(self, spec_seq: torch.Tensor) -> torch.Tensor:
+        if self.max_shift <= 0:
+            return spec_seq
+        dx = random.randint(-self.max_shift, self.max_shift)
+        if dx == 0:
+            return spec_seq
+        out = torch.roll(spec_seq, shifts=dx, dims=3)
+        if dx > 0:
+            out[:, :, :, :dx] = self.pad_value
+        else:
+            out[:, :, :, dx:] = self.pad_value
+        return out
+
+
+def build_spec_train_transform(onset_translation: int = 1):
+    """
+    Factory matching the paper's full_aug audio augmentation.
+    Pass onset_translation=0 to disable.
+    """
+    if onset_translation <= 0:
+        return None
+    return RandomSpecShift(max_shift=onset_translation)

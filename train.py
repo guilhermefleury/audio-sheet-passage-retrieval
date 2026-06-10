@@ -37,9 +37,16 @@ sys.path.insert(0, str(Path(__file__).parent))
 from model import CrossModalEncoder, triplet_loss
 from dataset.dataloaders import (
     build_sheet_train_transform,
+    build_spec_train_transform,
     create_passage_group_split_dataloaders,
     create_passage_sequence_split_dataloaders,
 )
+
+try:
+    import wandb
+    _HAS_WANDB = True
+except ImportError:
+    _HAS_WANDB = False
 
 
 # Paper full_aug training synths (msmd_config.yaml `full_aug.synths`).
@@ -218,6 +225,20 @@ def main(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}\n")
 
+    # ---- Wandb setup -------------------------------------------------------
+    use_wandb = args.wandb
+    if use_wandb and not _HAS_WANDB:
+        print("[ERROR] --wandb requested but wandb is not installed.\n"
+              "        Run: pip install wandb")
+        sys.exit(1)
+    if use_wandb:
+        wandb.init(
+            project=args.wandb_project,
+            name=args.wandb_run_name or Path(args.exp_root).name,
+            config=vars(args),
+            mode=args.wandb_mode,
+        )
+
     # ---- Dataloaders -------------------------------------------------------
     manifest = Path(args.split_manifest)
     if not manifest.exists():
@@ -233,6 +254,9 @@ def main(args):
             translation=args.sheet_translation,
             scale_range=(args.sheet_scale_low, args.sheet_scale_high),
         )
+        train_spec_tf = build_spec_train_transform(
+            onset_translation=args.onset_translation,
+        )
         datasets, loaders, skipped = create_passage_group_split_dataloaders(
             processed_root=args.processed_root,
             split_manifest_path=str(manifest),
@@ -245,6 +269,7 @@ def main(args):
             eval_synths=_parse_csv_str(args.eval_synths),
             eval_tempo_range=_parse_csv_int_pair(args.eval_tempo_range),
             train_sheet_transform=train_sheet_tf,
+            train_spec_transform=train_spec_tf,
         )
         print(f"  using PassageGroupDataset (atomic (piece, system); variant sampled per epoch)")
         for split, ds in datasets.items():
@@ -381,6 +406,25 @@ def main(args):
             f"{lr_now:>8.2e}  {elapsed:>4.0f}s"
         )
 
+        if use_wandb:
+            wandb.log({
+                "epoch": epoch,
+                "tr_loss": tr_loss,
+                "va_loss": va_loss,
+                "s2a/mrr":      va_s2a["mrr"],
+                "s2a/r@1":      va_s2a["r@1"],
+                "s2a/r@10":     va_s2a["r@10"],
+                "s2a/r@25":     va_s2a.get("r@25", float("nan")),
+                "s2a/med_rank": va_s2a["med_rank"],
+                "a2s/mrr":      va_a2s["mrr"],
+                "a2s/r@1":      va_a2s["r@1"],
+                "a2s/r@10":     va_a2s["r@10"],
+                "a2s/r@25":     va_a2s.get("r@25", float("nan")),
+                "a2s/med_rank": va_a2s["med_rank"],
+                "lr":           lr_now,
+                "epoch_time_s": elapsed,
+            })
+
         if val_mrr > best_val_mrr:
             best_val_mrr = val_mrr
             no_improve_count = 0
@@ -404,6 +448,10 @@ def main(args):
 
     print(f"\nBest val S2A MRR : {best_val_mrr:.4f}")
     print(f"Checkpoint saved : {ckpt_path}")
+
+    if use_wandb:
+        wandb.summary["best_val_s2a_mrr"] = best_val_mrr
+        wandb.finish()
 
 
 # ---------------------------------------------------------------------------
@@ -485,5 +533,19 @@ if __name__ == "__main__":
                         help="Random sheet scaling lower bound (paper: 0.95).")
     parser.add_argument("--sheet_scale_high", type=float, default=1.05,
                         help="Random sheet scaling upper bound (paper: 1.05).")
+    parser.add_argument("--onset_translation", type=int, default=1,
+                        help="Random spec frame shift during training (paper: 1).")
+
+    # Wandb (opt-in)
+    parser.add_argument("--wandb", action="store_true", default=False,
+                        help="Log run to Weights & Biases (requires `pip install wandb` "
+                             "and `wandb login`).")
+    parser.add_argument("--wandb_project", type=str, default="aspr-tcc",
+                        help="W&B project name.")
+    parser.add_argument("--wandb_run_name", type=str, default=None,
+                        help="Optional W&B run name (defaults to exp_root basename).")
+    parser.add_argument("--wandb_mode", type=str, default="online",
+                        choices=("online", "offline", "disabled"),
+                        help="W&B mode (use 'offline' if the server has no internet).")
 
     main(parser.parse_args())

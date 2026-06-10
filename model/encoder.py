@@ -17,6 +17,8 @@ Input contract (from passage_sequence_collate_fn):
   spec_len  : [B]  (LongTensor)
 """
 
+from typing import List
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -32,6 +34,37 @@ def _init_weights(m: nn.Module) -> None:
         nn.init.orthogonal_(m.weight)
         if m.bias is not None:
             nn.init.zeros_(m.bias)
+
+
+# ---------------------------------------------------------------------------
+# Per-frequency-bin spectrogram normalisation
+# ---------------------------------------------------------------------------
+
+class TemporalBatchNorm(nn.Module):
+    """
+    Per-frequency-bin BatchNorm for spectrogram inputs.
+
+    Input layout (after SequenceEncoder's permute): [N, 1, T, F]
+        N = number of snippets in the batch
+        T = time frames per snippet (20 for the paper's audio)
+        F = frequency bins (92 for the paper's audio)
+
+    Normalises each frequency bin independently across batch + time, matching
+    the paper's audio path (`normalize_input=True` in msmd_config.yaml +
+    CNNEncoder of lcasr-main/lcasr/models/vgg_model.py).
+    """
+
+    def __init__(self, num_bands: int, affine: bool = False) -> None:
+        super().__init__()
+        self.bn = nn.BatchNorm1d(num_bands, affine=affine)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        shape = x.shape                        # [N, C, T, F]
+        x = x.reshape((-1,) + x.shape[-2:])    # [N*C, T, F]
+        x = x.permute(0, 2, 1)                 # [N*C, F, T]  - F as BN channel
+        x = self.bn(x)
+        x = x.permute(0, 2, 1)                 # [N*C, T, F]
+        return x.reshape(shape)
 
 
 # ---------------------------------------------------------------------------
@@ -57,6 +90,8 @@ class CNNEncoder(nn.Module):
         snippet_emb_dim: int = 32,
         num_filters: int = 24,
         groupnorm: bool = False,
+        normalize_input: bool = False,
+        num_freq_bins: int = 92,
     ) -> None:
         super().__init__()
         nf = num_filters
@@ -64,7 +99,10 @@ class CNNEncoder(nn.Module):
         def norm(channels: int) -> nn.Module:
             return nn.GroupNorm(1, channels) if groupnorm else nn.BatchNorm2d(channels)
 
-        self.cnn = nn.Sequential(
+        layers: List[nn.Module] = []
+        if normalize_input:
+            layers.append(TemporalBatchNorm(num_freq_bins, affine=False))
+        layers.extend([
             # Block 1:  1 → 24
             nn.Conv2d(1,      nf,      3, padding=1), norm(nf),      nn.ELU(inplace=True),
             nn.Conv2d(nf,     nf,      3, padding=1), norm(nf),      nn.ELU(inplace=True),
@@ -83,7 +121,8 @@ class CNNEncoder(nn.Module):
             nn.MaxPool2d(2),
             # 1x1 projection: 96 → snippet_emb_dim
             nn.Conv2d(nf * 4, snippet_emb_dim, 1), norm(snippet_emb_dim),
-        )
+        ])
+        self.cnn = nn.Sequential(*layers)
         self.fc = nn.Linear(linear_input_size, snippet_emb_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -115,9 +154,17 @@ class SequenceEncoder(nn.Module):
         rnn_hidden: int = 128,
         emb_dim: int = 64,
         groupnorm: bool = False,
+        normalize_input: bool = False,
+        num_freq_bins: int = 92,
     ) -> None:
         super().__init__()
-        self.cnn = CNNEncoder(cnn_linear_input_size, snippet_emb_dim, groupnorm=groupnorm)
+        self.cnn = CNNEncoder(
+            cnn_linear_input_size,
+            snippet_emb_dim,
+            groupnorm=groupnorm,
+            normalize_input=normalize_input,
+            num_freq_bins=num_freq_bins,
+        )
         self.gru = nn.GRU(
             input_size=snippet_emb_dim,
             hidden_size=rnn_hidden,
@@ -180,10 +227,22 @@ class CrossModalEncoder(nn.Module):
         snippet_emb_dim: int = 32,
         rnn_hidden: int = 128,
         emb_dim: int = 64,
+        audio_normalize_input: bool = True,
     ) -> None:
         super().__init__()
-        self.sheet_enc = SequenceEncoder(self._SHEET_LINEAR, snippet_emb_dim, rnn_hidden, emb_dim, groupnorm=False)
-        self.audio_enc = SequenceEncoder(self._AUDIO_LINEAR, snippet_emb_dim, rnn_hidden, emb_dim, groupnorm=True)
+        self.sheet_enc = SequenceEncoder(
+            self._SHEET_LINEAR, snippet_emb_dim, rnn_hidden, emb_dim,
+            groupnorm=False,
+        )
+        # Audio path: GroupNorm in CNN body + TemporalBatchNorm on raw input,
+        # matching the paper's audio_path (vgg_model.py SequenceEncoder with
+        # normalize_input=True for is_audio=True).
+        self.audio_enc = SequenceEncoder(
+            self._AUDIO_LINEAR, snippet_emb_dim, rnn_hidden, emb_dim,
+            groupnorm=True,
+            normalize_input=audio_normalize_input,
+            num_freq_bins=92,
+        )
         self.apply(_init_weights)
 
     def forward(

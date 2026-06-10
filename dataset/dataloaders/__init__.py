@@ -5,8 +5,10 @@ from .passage_group_dataset import PassageGroupDataset, filter_jobs_by_variant, 
 from .transforms import (
     Compose,
     RandomScale,
+    RandomSpecShift,
     RandomVerticalShift,
     build_sheet_train_transform,
+    build_spec_train_transform,
 )
 from .loader_factory import (
     create_and_save_piece_split_manifest,
@@ -26,8 +28,10 @@ __all__ = [
     "parse_performance",
     "Compose",
     "RandomScale",
+    "RandomSpecShift",
     "RandomVerticalShift",
     "build_sheet_train_transform",
+    "build_spec_train_transform",
     "create_passage_sequence_dataloader",
     "create_slice_pair_dataloader",
     "create_and_save_piece_split_manifest",
