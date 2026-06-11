@@ -55,8 +55,14 @@ _PAPER_TRAIN_SYNTHS = (
     "ElectricPiano",
     "YamahaGrandPiano",
 )
-# Paper held-out test synth (msmd_config.yaml `test_aug.synths`).
-_PAPER_EVAL_SYNTHS = (
+# Paper no_aug val synths (msmd_config.yaml `no_aug.synths`) — used for the
+# LR/early-stop signal because it's in-distribution and stable.
+_PAPER_VAL_SYNTHS = (
+    "ElectricPiano",
+)
+# Paper test_aug held-out synth (msmd_config.yaml `test_aug.synths`) — used
+# only for final test-set retrieval metrics.
+_PAPER_TEST_SYNTHS = (
     "grand-piano-YDP-20160804",
 )
 
@@ -86,7 +92,7 @@ def compute_retrieval_metrics(x: np.ndarray, y: np.ndarray) -> dict:
     of the matching y[i].  x and y must have the same length; pair (i, i) is
     the ground-truth match.
 
-    Returns R@1, R@10, R@25 (percentage), MRR, and Median Rank.
+    Returns R@1, R@5, R@10, R@25 (percentage), MRR, and Median Rank.
     """
     n = x.shape[0]
     dists = cdist(x, y, metric="cosine")                   # [n, n]
@@ -94,11 +100,12 @@ def compute_retrieval_metrics(x: np.ndarray, y: np.ndarray) -> dict:
     # rank of the correct item for each query
     ranks = (np.arange(n)[:, None] == sorted_idx).nonzero()[1] + 1  # [n]
 
-    hit_rates = {k: int((ranks <= k).sum()) for k in (1, 10, 25)}
+    hit_rates = {k: int((ranks <= k).sum()) for k in (1, 5, 10, 25)}
     return {
         "mrr":      float(np.mean(1.0 / ranks)),
         "med_rank": float(np.median(ranks)),
         "r@1":      100.0 * hit_rates[1]  / n,
+        "r@5":      100.0 * hit_rates[5]  / n,
         "r@10":     100.0 * hit_rates[10] / n,
         "r@25":     100.0 * hit_rates[25] / n,
     }
@@ -266,8 +273,10 @@ def main(args):
             drop_last_train=True,
             train_synths=_parse_csv_str(args.train_synths),
             train_tempo_range=_parse_csv_int_pair(args.train_tempo_range),
-            eval_synths=_parse_csv_str(args.eval_synths),
-            eval_tempo_range=_parse_csv_int_pair(args.eval_tempo_range),
+            val_synths=_parse_csv_str(args.val_synths),
+            val_tempo_range=_parse_csv_int_pair(args.val_tempo_range),
+            test_synths=_parse_csv_str(args.test_synths),
+            test_tempo_range=_parse_csv_int_pair(args.test_tempo_range),
             train_sheet_transform=train_sheet_tf,
             train_spec_transform=train_spec_tf,
         )
@@ -380,11 +389,11 @@ def main(args):
         best_val_mrr = ckpt["val_s2a"]["mrr"]
         no_improve_count = ckpt.get("no_improve_count", 0)
         start_epoch = ckpt["epoch"] + 1
-        print(f"Resumed from epoch {ckpt['epoch']}  (best S2A MRR={best_val_mrr:.4f})\n")
+        print(f"Resumed from epoch {ckpt['epoch']}  (best A2S MRR={best_val_mrr:.4f})\n")
 
     print(f"{'Epoch':>5}  {'tr_loss':>8}  {'va_loss':>8}  "
-          f"{'S2A MRR':>8}  {'R@1':>6}  {'R@10':>6}  "
-          f"{'A2S MRR':>8}  {'med_rk':>7}  {'LR':>8}  {'time':>5}")
+          f"{'A2S MRR':>8}  {'R@1':>6}  {'R@10':>6}  "
+          f"{'S2A MRR':>8}  {'med_rk':>7}  {'LR':>8}  {'time':>5}")
     print("-" * 95)
 
     for epoch in range(start_epoch, args.n_epochs + 1):
@@ -393,16 +402,20 @@ def main(args):
         tr_loss = train_epoch(model, loaders["train"], loss_fn, optimizer, device, scaler=scaler, accum_steps=args.grad_accum)
         va_loss, va_s2a, va_a2s = eval_epoch(model, loaders["val"], loss_fn, device)
 
-        # Primary metric: S2A MRR (paper: S2A consistently outperforms A2S)
-        val_mrr = va_s2a["mrr"]
+        # Primary metric: A2S MRR (matches lcasr-main/lcasr/train.py:113,138 —
+        # paper's `iterate_dataset` uses retrieval_direction='a2s' and drives
+        # both the LR scheduler and best-checkpoint check off that).
+        val_mrr = va_a2s["mrr"]
         scheduler.step(val_mrr)
 
         elapsed = time.monotonic() - t0
         lr_now = optimizer.param_groups[0]["lr"]
+        # Display A2S as primary columns (now the metric driving training),
+        # keep S2A MRR alongside for comparison.
         print(
             f"{epoch:>5}  {tr_loss:>8.4f}  {va_loss:>8.4f}  "
-            f"{va_s2a['mrr']:>8.4f}  {va_s2a['r@1']:>6.1f}  {va_s2a['r@10']:>6.1f}  "
-            f"{va_a2s['mrr']:>8.4f}  {va_s2a['med_rank']:>7.1f}  "
+            f"{va_a2s['mrr']:>8.4f}  {va_a2s['r@1']:>6.1f}  {va_a2s['r@10']:>6.1f}  "
+            f"{va_s2a['mrr']:>8.4f}  {va_a2s['med_rank']:>7.1f}  "
             f"{lr_now:>8.2e}  {elapsed:>4.0f}s"
         )
 
@@ -438,7 +451,7 @@ def main(args):
                 "val_a2s": va_a2s,
                 "args": vars(args),
             }, ckpt_path)
-            print(f"       -> checkpoint saved  (S2A MRR={val_mrr:.4f})")
+            print(f"       -> checkpoint saved  (A2S MRR={val_mrr:.4f})")
         else:
             no_improve_count += 1
             if no_improve_count >= early_stop_patience:
@@ -446,11 +459,11 @@ def main(args):
                       f"({no_improve_count} epochs without improvement).")
                 break
 
-    print(f"\nBest val S2A MRR : {best_val_mrr:.4f}")
+    print(f"\nBest val A2S MRR : {best_val_mrr:.4f}")
     print(f"Checkpoint saved : {ckpt_path}")
 
     if use_wandb:
-        wandb.summary["best_val_s2a_mrr"] = best_val_mrr
+        wandb.summary["best_val_a2s_mrr"] = best_val_mrr
         wandb.finish()
 
 
@@ -520,13 +533,22 @@ if __name__ == "__main__":
     parser.add_argument("--train_tempo_range", type=str, default="900,1100",
                         help="Comma-separated 'lo,hi' tempo bounds in 1000ths for train "
                              "(paper full_aug: 900,1100 = 0.9x..1.1x). Empty disables.")
-    parser.add_argument("--eval_synths", type=str,
-                        default=",".join(_PAPER_EVAL_SYNTHS),
-                        help="Comma-separated synth allowlist for val/test "
-                             "(paper test_aug: grand-piano-YDP-20160804). Empty disables.")
-    parser.add_argument("--eval_tempo_range", type=str, default="1000,1000",
-                        help="Comma-separated 'lo,hi' tempo bounds for val/test "
-                             "(paper test_aug: 1000,1000 = original tempo only).")
+    parser.add_argument("--val_synths", type=str,
+                        default=",".join(_PAPER_VAL_SYNTHS),
+                        help="Comma-separated synth allowlist for the val split "
+                             "(paper no_aug: ElectricPiano). In-distribution -> stable "
+                             "signal for LR scheduler and early stop. Empty disables.")
+    parser.add_argument("--val_tempo_range", type=str, default="1000,1000",
+                        help="Comma-separated 'lo,hi' tempo bounds for val "
+                             "(paper no_aug: 1000,1000 = original tempo only).")
+    parser.add_argument("--test_synths", type=str,
+                        default=",".join(_PAPER_TEST_SYNTHS),
+                        help="Comma-separated synth allowlist for the test split "
+                             "(paper test_aug: grand-piano-YDP-20160804, held out from "
+                             "training). Empty disables.")
+    parser.add_argument("--test_tempo_range", type=str, default="1000,1000",
+                        help="Comma-separated 'lo,hi' tempo bounds for test "
+                             "(paper test_aug: 1000,1000).")
     parser.add_argument("--sheet_translation", type=int, default=5,
                         help="Random vertical shift of sheet snippets in pixels (paper: 5).")
     parser.add_argument("--sheet_scale_low", type=float, default=0.95,

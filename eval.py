@@ -96,16 +96,17 @@ def compute_retrieval_metrics(x: np.ndarray, y: np.ndarray) -> dict:
     For each query x[i], rank all candidates y[j] by cosine distance.
     The correct match is always y[i].
 
-    Returns R@1, R@10, R@25 (%), MRR, and Median Rank.
+    Returns R@1, R@5, R@10, R@25 (%), MRR, and Median Rank.
     """
     n = x.shape[0]
     dists = cdist(x, y, metric="cosine")                       # [n, n]
     sorted_idx = np.argsort(dists, axis=1)
     ranks = (np.arange(n)[:, None] == sorted_idx).nonzero()[1] + 1  # [n]
 
-    hits = {k: int((ranks <= k).sum()) for k in (1, 10, 25)}
+    hits = {k: int((ranks <= k).sum()) for k in (1, 5, 10, 25)}
     return {
         "r@1":      100.0 * hits[1]  / n,
+        "r@5":      100.0 * hits[5]  / n,
         "r@10":     100.0 * hits[10] / n,
         "r@25":     100.0 * hits[25] / n,
         "mrr":      float(np.mean(1.0 / ranks)),
@@ -116,7 +117,7 @@ def compute_retrieval_metrics(x: np.ndarray, y: np.ndarray) -> dict:
 
 def print_results_table(s2a: dict, a2s: dict) -> None:
     """Print a results table matching Table 2 style from the paper."""
-    header = f"{'Direction':<12} {'R@1':>7} {'R@10':>7} {'R@25':>7} {'MRR':>7} {'Med.Rk':>8}  {'N':>5}"
+    header = f"{'Direction':<12} {'R@1':>7} {'R@5':>7} {'R@10':>7} {'R@25':>7} {'MRR':>7} {'Med.Rk':>8}  {'N':>5}"
     sep    = "-" * len(header)
     print(sep)
     print(header)
@@ -125,6 +126,7 @@ def print_results_table(s2a: dict, a2s: dict) -> None:
         print(
             f"{label:<12} "
             f"{m['r@1']:>7.2f} "
+            f"{m['r@5']:>7.2f} "
             f"{m['r@10']:>7.2f} "
             f"{m['r@25']:>7.2f} "
             f"{m['mrr']:>7.4f} "
@@ -179,6 +181,13 @@ def main(args):
 
     print(f"\nBuilding '{args.split}' loader from: {manifest.name}")
     if args.use_group_dataset:
+        # eval.py reads a single split (--split). The factory still builds all
+        # three to honour piece-disjoint partitioning, so apply the user's
+        # synth/tempo filter to every split — the unused splits being smaller
+        # is harmless, and ensures the requested split is filtered correctly
+        # whichever one it is.
+        filt_synths = _parse_csv_str(args.eval_synths)
+        filt_tempo  = _parse_csv_int_pair(args.eval_tempo_range)
         _, loaders, skipped = create_passage_group_split_dataloaders(
             processed_root=args.processed_root,
             split_manifest_path=str(manifest),
@@ -186,8 +195,9 @@ def main(args):
             num_workers=args.num_workers,
             pin_memory=(device.type == "cuda"),
             drop_last_train=False,
-            eval_synths=_parse_csv_str(args.eval_synths),
-            eval_tempo_range=_parse_csv_int_pair(args.eval_tempo_range),
+            train_synths=filt_synths, train_tempo_range=filt_tempo,
+            val_synths=filt_synths,   val_tempo_range=filt_tempo,
+            test_synths=filt_synths,  test_tempo_range=filt_tempo,
         )
     else:
         _, loaders, skipped = create_passage_sequence_split_dataloaders(

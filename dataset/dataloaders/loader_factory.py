@@ -227,8 +227,10 @@ def create_passage_group_split_dataloaders(
     drop_last_train: bool = True,
     train_synths: Optional[List[str]] = None,
     train_tempo_range: Optional[Tuple[int, int]] = None,
-    eval_synths: Optional[List[str]] = None,
-    eval_tempo_range: Optional[Tuple[int, int]] = None,
+    val_synths: Optional[List[str]] = None,
+    val_tempo_range: Optional[Tuple[int, int]] = None,
+    test_synths: Optional[List[str]] = None,
+    test_tempo_range: Optional[Tuple[int, int]] = None,
     train_sheet_transform: Optional[Any] = None,
     train_spec_transform: Optional[Any] = None,
     eval_sheet_transform: Optional[Any] = None,
@@ -240,9 +242,15 @@ def create_passage_group_split_dataloaders(
     Build train/val/test DataLoaders using PassageGroupDataset.
 
     Each item is one unique (piece, system_id); the audio variant is sampled
-    per __getitem__ call ("random" for train, "fixed" for val/test). The
-    train split is also filtered to the paper's training synths/tempo range;
-    val and test are filtered to the held-out evaluation synth/tempo.
+    per __getitem__ call ("random" for train, "fixed" for val/test).
+
+    Per the paper (lcasr-main/lcasr/wrappers.py:80,155):
+      - train  uses full_aug  (3 training synths, tempo 0.9-1.1)
+      - val    uses no_aug    (ElectricPiano, tempo 1.0)              <-- in-distribution
+      - test   uses test_aug  (grand-piano-YDP-20160804, tempo 1.0)   <-- held-out
+
+    Driving LR/early-stop off an in-distribution val signal is smoother than
+    using the held-out test synth and is what the paper does.
 
     Argument conventions:
       *_synths        : list of allowed synth names; None means no filtering
@@ -263,15 +271,15 @@ def create_passage_group_split_dataloaders(
             "spec_transform": train_spec_transform,
         },
         "val": {
-            "synths": eval_synths,
-            "tempo_range": eval_tempo_range,
+            "synths": val_synths,
+            "tempo_range": val_tempo_range,
             "mode": "fixed",
             "sheet_transform": eval_sheet_transform,
             "spec_transform": eval_spec_transform,
         },
         "test": {
-            "synths": eval_synths,
-            "tempo_range": eval_tempo_range,
+            "synths": test_synths,
+            "tempo_range": test_tempo_range,
             "mode": "fixed",
             "sheet_transform": eval_sheet_transform,
             "spec_transform": eval_spec_transform,
