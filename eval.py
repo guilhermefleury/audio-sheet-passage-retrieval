@@ -171,7 +171,16 @@ def main(args):
         rnn_hidden=rnn_hidden,
         emb_dim=emb_dim,
     ).to(device)
-    model.load_state_dict(ckpt["model_state"])
+    # strict=False so checkpoints from before TemporalBatchNorm was added
+    # (v1, v2) can be loaded. Missing TBN buffers stay at their init values
+    # (running_mean=0, running_var=1), making TBN behave as identity —
+    # which is exactly what those older models saw during training.
+    missing, unexpected = model.load_state_dict(ckpt["model_state"], strict=False)
+    if missing:
+        print(f"  [warn] {len(missing)} missing key(s) (likely older checkpoint w/o TBN). "
+              f"First few: {missing[:3]}")
+    if unexpected:
+        print(f"  [warn] {len(unexpected)} unexpected key(s): {unexpected[:3]}")
 
     # ---- Dataloader --------------------------------------------------------
     manifest = Path(args.split_manifest)
