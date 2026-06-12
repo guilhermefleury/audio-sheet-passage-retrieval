@@ -166,19 +166,25 @@ def main(args):
     print(f"Device: {device}")
 
     # ---- Model -------------------------------------------------------------
+    # Detect whether the checkpoint was saved by a model that had
+    # TemporalBatchNorm on the audio path. v1 / v2 predate that change; v3+
+    # have it. Without this detection, every Sequential index in the audio
+    # CNN is shifted by 1 and the load fails on size-mismatch.
+    state_dict = ckpt["model_state"]
+    has_tbn = "audio_enc.cnn.cnn.0.bn.running_mean" in state_dict
+    if not has_tbn:
+        print("  [info] checkpoint predates TemporalBatchNorm on audio path; "
+              "building model without it for compatibility.")
+
     model = CrossModalEncoder(
         snippet_emb_dim=snippet_emb_dim,
         rnn_hidden=rnn_hidden,
         emb_dim=emb_dim,
+        audio_normalize_input=has_tbn,
     ).to(device)
-    # strict=False so checkpoints from before TemporalBatchNorm was added
-    # (v1, v2) can be loaded. Missing TBN buffers stay at their init values
-    # (running_mean=0, running_var=1), making TBN behave as identity —
-    # which is exactly what those older models saw during training.
-    missing, unexpected = model.load_state_dict(ckpt["model_state"], strict=False)
+    missing, unexpected = model.load_state_dict(state_dict, strict=False)
     if missing:
-        print(f"  [warn] {len(missing)} missing key(s) (likely older checkpoint w/o TBN). "
-              f"First few: {missing[:3]}")
+        print(f"  [warn] {len(missing)} missing key(s): {missing[:3]}")
     if unexpected:
         print(f"  [warn] {len(unexpected)} unexpected key(s): {unexpected[:3]}")
 
