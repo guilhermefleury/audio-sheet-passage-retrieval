@@ -63,4 +63,16 @@ venv/
 *.rar
 *.7z
 
+# Pôster da feira de TCC (não relevante para o trabalho)
+_populate_poster.py
+_generate_poster_images.py
+poster_feira*.pptx
+poster_feira*.pdf
+template_feiratcc.pptx
+/poster_images/
+
+# Curvas exportadas do W&B (figuras finais ficam em tese/img/)
+/analysis/export_wandb_figures.py
+/v4*.png
+
 llm.txt

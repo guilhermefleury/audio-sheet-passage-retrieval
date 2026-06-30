@@ -24,6 +24,9 @@ def run_batch(
     max_pieces=None,
     max_performances_per_piece=None,
     allow_equal_split_fallback=False,
+    sheet_stride=90,
+    spec_window_frames=20,
+    spec_stride_frames=10,
 ):
     piece_dirs = discover_piece_dirs(msmd_root)
     if max_pieces is not None:
@@ -37,6 +40,9 @@ def run_batch(
         "output_root": str(output_root),
         "overwrite": overwrite,
         "piece_count": len(piece_dirs),
+        "sheet_stride": sheet_stride,
+        "spec_window_frames": spec_window_frames,
+        "spec_stride_frames": spec_stride_frames,
         "processed": [],
         "failures": [],
     }
@@ -75,9 +81,9 @@ def run_batch(
                     file_path=str(piece_dir),
                     performance_name=perf,
                     output_root=str(output_root),
-                    sheet_stride=90,
-                    spec_window_frames=20,
-                    spec_stride_frames=10,
+                    sheet_stride=sheet_stride,
+                    spec_window_frames=spec_window_frames,
+                    spec_stride_frames=spec_stride_frames,
                     overwrite=overwrite,
                     allow_equal_split_fallback=allow_equal_split_fallback,
                 )
@@ -142,6 +148,15 @@ def main():
         action="store_true",
         help="Fallback to equal system-time split if timing-based slicing fails",
     )
+    parser.add_argument(
+        "--overlap",
+        type=float,
+        default=0.5,
+        help=(
+            "Fração de sobreposição entre snippets consecutivos (padrão 0.5 = 50%%). "
+            "Use 0.1 para reproduzir a configuração de stride do trabalho de referência."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -151,6 +166,20 @@ def main():
     if not msmd_root.exists():
         raise FileNotFoundError(f"MSMD root does not exist: {msmd_root}")
 
+    if not (0.0 <= args.overlap < 1.0):
+        raise ValueError(f"--overlap deve estar em [0, 1). Recebido: {args.overlap}")
+
+    sheet_window = 180
+    spec_window = 20
+    sheet_stride = int(round(sheet_window * (1.0 - args.overlap)))
+    spec_stride_frames = int(round(spec_window * (1.0 - args.overlap)))
+
+    print(
+        f"Sobreposição: {args.overlap:.0%} | "
+        f"sheet_stride={sheet_stride} (janela {sheet_window}) | "
+        f"spec_stride_frames={spec_stride_frames} (janela {spec_window})"
+    )
+
     run_batch(
         msmd_root=msmd_root,
         output_root=output_root,
@@ -158,6 +187,9 @@ def main():
         max_pieces=args.max_pieces,
         max_performances_per_piece=args.max_performances_per_piece,
         allow_equal_split_fallback=args.allow_equal_split_fallback,
+        sheet_stride=sheet_stride,
+        spec_window_frames=spec_window,
+        spec_stride_frames=spec_stride_frames,
     )
 
 
